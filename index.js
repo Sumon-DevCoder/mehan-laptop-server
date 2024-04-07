@@ -3,6 +3,7 @@ const app = express();
 const port = process.env.PORT || 4000;
 require("dotenv").config();
 const cors = require("cors");
+const stripe = require("stripe")(process.env.STRIPE_TEST_SECRECT_KEY);
 const jwt = require("jsonwebtoken");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.jlzdidu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
@@ -192,6 +193,24 @@ async function run() {
       const filter = { _id: new ObjectId(id) };
       const result = await cartCollection.deleteOne(filter);
       res.send(result);
+    });
+
+    app.post("/create-payment-intent", async (req, res) => {
+      const { price } = req.body;
+
+      // create payment method intent
+      const amount = parseInt(price * 100);
+      console.log(amount, "amount inside server");
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amount,
+        currency: "usd",
+        payment_method_types: ["card"],
+      });
+
+      console.log(paymentIntent);
+
+      res.send({ clientSecret: paymentIntent.client_secret });
     });
 
     // await client.db("admin").command({ ping: 1 });
