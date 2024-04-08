@@ -6,6 +6,7 @@ const cors = require("cors");
 const stripe = require("stripe")(process.env.STRIPE_TEST_SECRECT_KEY);
 const jwt = require("jsonwebtoken");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const { reset } = require("nodemon");
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.jlzdidu.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 // middleware
@@ -26,6 +27,7 @@ async function run() {
     const laptopCollection = client.db("mehanDB").collection("laptops");
     const userCollection = client.db("mehanDB").collection("users");
     const cartCollection = client.db("mehanDB").collection("carts");
+    const paymentCollection = client.db("mehanDB").collection("payments");
 
     // jwt related apis route
     app.post("/jwt", (req, res) => {
@@ -200,7 +202,6 @@ async function run() {
 
       // create payment method intent
       const amount = parseInt(price * 100);
-      console.log(amount, "amount inside server");
 
       const paymentIntent = await stripe.paymentIntents.create({
         amount: amount,
@@ -208,9 +209,98 @@ async function run() {
         payment_method_types: ["card"],
       });
 
-      console.log(paymentIntent);
-
       res.send({ clientSecret: paymentIntent.client_secret });
+    });
+
+    // payment collection apis routes
+    app.get("/payment/:email", verifyToken, async (req, res) => {
+      const query = { email: req.params.email };
+
+      if (req.params.email !== req.decoded.email) {
+        res.status(403).send({ message: "forbidden access" });
+      }
+
+      const result = await paymentCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    app.post("/payment", async (req, res) => {
+      const paymentInfo = req.body;
+      const paymentResult = await paymentCollection.insertOne(paymentInfo);
+
+      // carefully delete each carts items
+      const query = {
+        _id: {
+          $in: paymentInfo.cartIds.map((id) => new ObjectId(id)),
+        },
+      };
+
+      const deletedResult = await cartCollection.deleteMany(query);
+
+      // send user  email about payment confirmation
+      
+
+      res.send({ paymentResult, deletedResult });
+    });
+
+    // stats or analytics apis route
+    app.get("/admin-stats", verifyToken, verifyAdmin, async (req, res) => {
+      const users = await userCollection.estimatedDocumentCount();
+      const laptopItems = await laptopCollection.estimatedDocumentCount();
+      const orders = await paymentCollection.estimatedDocumentCount();
+
+      // this is not the best way
+      // const payment = await paymentCollection.find().toArray();
+      // const revenue = payment.reduce((total, item) => total + item.price, 0);
+
+      const result = await paymentCollection
+        .aggregate([
+          {
+            $group: {
+              _id: null,
+              totlaRevenue: {
+                $sum: "$price",
+              },
+            },
+          },
+        ])
+        .toArray();
+
+      const revenue = result.length > 0 ? result[0].totlaRevenue : 0;
+
+      res.send({ users, laptopItems, orders, revenue });
+    });
+
+    // using aggregate pipeline
+    app.get("/order-stats", async (req, res) => {
+      const result = await paymentCollection
+        .aggregate([
+          {
+            $unwind: "$laptopItemIds",
+          },
+          {
+            $lookup: {
+              from: "laptops",
+              localField: "laptopItemIds",
+              foreignField: "_id",
+              as: "laptopItems",
+            },
+          },
+          {
+            $unwind: "$laptopItems",
+          },
+          // {
+          //   $group: {
+          //     _id: "$laptopItems.category",
+          //     quantity: {
+          //       $sum: 1,
+          //     },
+          //   },
+          // },
+        ])
+        .toArray();
+
+      res.send(result);
     });
 
     // await client.db("admin").command({ ping: 1 });
